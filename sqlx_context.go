@@ -1,3 +1,4 @@
+//go:build go1.8
 // +build go1.8
 
 package sqlx
@@ -206,6 +207,38 @@ func (db *DB) BeginTxx(ctx context.Context, opts *sql.TxOptions) (*Tx, error) {
 		return nil, err
 	}
 	return &Tx{Tx: tx, driverName: db.driverName, unsafe: db.unsafe, Mapper: db.Mapper}, err
+}
+
+// TransactionTx txWrapper use sql.Tx
+func (db *DB) TransactionTx(ctx context.Context, opts *sql.TxOptions, fn func(tx *sql.Tx) error) error {
+	tx, err := db.DB.BeginTx(ctx, opts)
+	if err != nil {
+		return err
+	}
+	if err = fn(tx); err == nil {
+		return tx.Commit()
+	}
+	if _err := tx.Rollback(); _err == nil {
+		return err
+	} else {
+		return fmt.Errorf("rollBack err: %w original err:%w", _err, err)
+	}
+}
+
+// TransactionTxx txWrapper use sqlx.Tx
+func (db *DB) TransactionTxx(ctx context.Context, opts *sql.TxOptions, fn func(tx *Tx) error) error {
+	txx, err := db.BeginTxx(ctx, opts)
+	if err != nil {
+		return err
+	}
+	if err = fn(txx); err == nil {
+		return txx.Commit()
+	}
+	if _err := txx.Rollback(); _err == nil {
+		return err
+	} else {
+		return fmt.Errorf("rollBack err: %w original err:%w", _err, err)
+	}
 }
 
 // Connx returns an *sqlx.Conn instead of an *sql.Conn.

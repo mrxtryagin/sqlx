@@ -51,9 +51,9 @@ func mapper() *reflectx.Mapper {
 
 // isScannable takes the reflect.Type and the actual dest value and returns
 // whether or not it's Scannable.  Something is scannable if:
-//   * it is not a struct
-//   * it implements sql.Scanner
-//   * it has no exported fields
+//   - it is not a struct
+//   - it implements sql.Scanner
+//   - it has no exported fields
 func isScannable(t reflect.Type) bool {
 	if reflect.PtrTo(t).Implements(_scannerInterface) {
 		return true
@@ -582,12 +582,12 @@ type Rows struct {
 }
 
 // SliceScan using this Rows.
-func (r *Rows) SliceScan() ([]interface{}, error) {
+func (r *Rows) SliceScan(option ...ScanOption) ([]interface{}, error) {
 	return SliceScan(r)
 }
 
 // MapScan using this Rows.
-func (r *Rows) MapScan(dest map[string]interface{}) error {
+func (r *Rows) MapScan(dest map[string]interface{}, option ...ScanOption) error {
 	return MapScan(r, dest)
 }
 
@@ -799,7 +799,7 @@ func (r *Row) StructScan(dest interface{}) error {
 // is not known.  Because you can pass an []interface{} directly to Scan,
 // it's recommended that you do that as it will not have to allocate new
 // slices per row.
-func SliceScan(r ColScanner) ([]interface{}, error) {
+func SliceScan(r ColScanner, option ...ScanOption) ([]interface{}, error) {
 	// ignore r.started, since we needn't use reflect for anything.
 	columns, err := r.Columns()
 	if err != nil {
@@ -818,7 +818,7 @@ func SliceScan(r ColScanner) ([]interface{}, error) {
 	}
 
 	for i := range columns {
-		values[i] = *(values[i].(*interface{}))
+		values[i] = handleRawValue(i, values, option...)
 	}
 
 	return values, r.Err()
@@ -831,7 +831,7 @@ func SliceScan(r ColScanner) ([]interface{}, error) {
 // This will modify the map sent to it in place, so reuse the same map with
 // care.  Columns which occur more than once in the result will overwrite
 // each other!
-func MapScan(r ColScanner, dest map[string]interface{}) error {
+func MapScan(r ColScanner, dest map[string]interface{}, option ...ScanOption) error {
 	// ignore r.started, since we needn't use reflect for anything.
 	columns, err := r.Columns()
 	if err != nil {
@@ -849,10 +849,31 @@ func MapScan(r ColScanner, dest map[string]interface{}) error {
 	}
 
 	for i, column := range columns {
-		dest[column] = *(values[i].(*interface{}))
+		dest[column] = handleRawValue(i, values, option...)
 	}
 
 	return r.Err()
+}
+
+func handleRawValue(idx int, values []any, option ...ScanOption) (data any) {
+	if len(option) <= 0 {
+		return *(values[idx].(*interface{}))
+	}
+	opts := loadScanOptions(option...)
+	if reflectValue := reflect.Indirect(reflect.Indirect(reflect.ValueOf(values[idx]))); reflectValue.IsValid() {
+		data = reflectValue.Interface()
+		if valuer, ok := data.(driver.Valuer); ok {
+			data, _ = valuer.Value()
+		} else if b, ok := data.(sql.RawBytes); ok {
+			data = b
+			if opts.StringifyRawBytes {
+				data = string(b)
+			}
+		}
+	} else {
+		data = nil
+	}
+	return data
 }
 
 type rowsi interface {
@@ -884,9 +905,9 @@ func structOnlyError(t reflect.Type) error {
 // then each row must only have one column which can scan into that type.  This
 // allows you to do something like:
 //
-//    rows, _ := db.Query("select id from people;")
-//    var ids []int
-//    scanAll(rows, &ids, false)
+//	rows, _ := db.Query("select id from people;")
+//	var ids []int
+//	scanAll(rows, &ids, false)
 //
 // and ids will be a list of the id results.  I realize that this is a desirable
 // interface to expose to users, but for now it will only be exposed via changes
