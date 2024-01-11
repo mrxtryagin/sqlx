@@ -855,7 +855,7 @@ func MapScan(r ColScanner, dest map[string]interface{}, option ...ScanOption) er
 	return r.Err()
 }
 
-func handleRawValue(idx int, values []any, option ...ScanOption) (data any) {
+func handleRawValue(idx int, values []interface{}, option ...ScanOption) (data interface{}) {
 	if len(option) <= 0 {
 		return *(values[idx].(*interface{}))
 	}
