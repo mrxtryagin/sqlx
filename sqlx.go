@@ -70,6 +70,7 @@ func isScannable(t reflect.Type) bool {
 // ColScanner is an interface used by MapScan and SliceScan
 type ColScanner interface {
 	Columns() ([]string, error)
+	ColumnTypes() ([]*sql.ColumnType, error)
 	Scan(dest ...interface{}) error
 	Err() error
 }
@@ -582,13 +583,13 @@ type Rows struct {
 }
 
 // SliceScan using this Rows.
-func (r *Rows) SliceScan(option ...ScanOption) ([]interface{}, error) {
-	return SliceScan(r, option...)
+func (r *Rows) SliceScan() ([]interface{}, error) {
+	return SliceScan(r)
 }
 
 // MapScan using this Rows.
-func (r *Rows) MapScan(dest map[string]interface{}, option ...ScanOption) error {
-	return MapScan(r, dest, option...)
+func (r *Rows) MapScan(dest map[string]interface{}) error {
+	return MapScan(r, dest)
 }
 
 // StructScan is like sql.Rows.Scan, but scans a single Row into a single Struct.
@@ -794,33 +795,56 @@ func (r *Row) StructScan(dest interface{}) error {
 	return r.scanAny(dest, true)
 }
 
+// prepareValues prepare values slice
+func prepareValues(values []interface{}, columnTypes []*sql.ColumnType, columns []string) {
+	if len(columnTypes) > 0 {
+		for idx, columnType := range columnTypes {
+			if columnType.ScanType() != nil {
+				values[idx] = reflect.New(reflect.PtrTo(columnType.ScanType())).Interface()
+			} else {
+				values[idx] = new(interface{})
+			}
+		}
+	} else {
+		for idx := range columns {
+			values[idx] = new(interface{})
+		}
+	}
+}
+
 // SliceScan a row, returning a []interface{} with values similar to MapScan.
 // This function is primarily intended for use where the number of columns
 // is not known.  Because you can pass an []interface{} directly to Scan,
 // it's recommended that you do that as it will not have to allocate new
 // slices per row.
-func SliceScan(r ColScanner, option ...ScanOption) ([]interface{}, error) {
-	// ignore r.started, since we needn't use reflect for anything.
+func SliceScan(r ColScanner) ([]interface{}, error) {
 	columns, err := r.Columns()
 	if err != nil {
-		return []interface{}{}, err
+		return nil, err
 	}
-
+	columnTypes, err := r.ColumnTypes()
+	if err != nil {
+		return nil, err
+	}
 	values := make([]interface{}, len(columns))
-	for i := range values {
-		values[i] = new(interface{})
-	}
+	prepareValues(values, columnTypes, columns)
 
 	err = r.Scan(values...)
-
 	if err != nil {
-		return values, err
+		return nil, err
 	}
-
-	for i := range columns {
-		values[i] = handleRawValue(i, values, option...)
+	for idx := range columns {
+		if reflectValue := reflect.Indirect(reflect.Indirect(reflect.ValueOf(values[idx]))); reflectValue.IsValid() {
+			values[idx] = reflectValue.Interface()
+			if valuer, ok := values[idx].(driver.Valuer); ok {
+				values[idx], _ = valuer.Value()
+			} else if b, ok := values[idx].(sql.RawBytes); ok {
+				values[idx] = string(b)
+			}
+		} else {
+			values[idx] = nil
+		}
 	}
-
 	return values, r.Err()
 }
 
@@ -831,27 +855,35 @@ func SliceScan(r ColScanner, option ...ScanOption) ([]interface{}, error) {
 // This will modify the map sent to it in place, so reuse the same map with
 // care.  Columns which occur more than once in the result will overwrite
 // each other!
-func MapScan(r ColScanner, dest map[string]interface{}, option ...ScanOption) error {
+func MapScan(r ColScanner, dest map[string]interface{}) error {
 	// ignore r.started, since we needn't use reflect for anything.
 	columns, err := r.Columns()
 	if err != nil {
 		return err
 	}
-
-	values := make([]interface{}, len(columns))
-	for i := range values {
-		values[i] = new(interface{})
+	columnTypes, err := r.ColumnTypes()
+	if err != nil {
+		return err
 	}
+	values := make([]interface{}, len(columns))
+	prepareValues(values, columnTypes, columns)
 
 	err = r.Scan(values...)
 	if err != nil {
 		return err
 	}
-
-	for i, column := range columns {
-		dest[column] = handleRawValue(i, values, option...)
+	for idx, column := range columns {
+		if reflectValue := reflect.Indirect(reflect.Indirect(reflect.ValueOf(values[idx]))); reflectValue.IsValid() {
+			dest[column] = reflectValue.Interface()
+			if valuer, ok := dest[column].(driver.Valuer); ok {
+				dest[column], _ = valuer.Value()
+			} else if b, ok := dest[column].(sql.RawBytes); ok {
+				dest[column] = string(b)
+			}
+		} else {
+			dest[column] = nil
+		}
 	}
-
 	return r.Err()
 }
 
@@ -879,6 +911,7 @@ func handleRawValue(idx int, values []interface{}, option ...ScanOption) (data i
 type rowsi interface {
 	Close() error
 	Columns() ([]string, error)
+	ColumnTypes() ([]*sql.ColumnType, error)
 	Err() error
 	Next() bool
 	Scan(...interface{}) error
