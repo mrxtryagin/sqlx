@@ -583,12 +583,12 @@ type Rows struct {
 
 // SliceScan using this Rows.
 func (r *Rows) SliceScan(option ...ScanOption) ([]interface{}, error) {
-	return SliceScan(r)
+	return SliceScan(r, option...)
 }
 
 // MapScan using this Rows.
 func (r *Rows) MapScan(dest map[string]interface{}, option ...ScanOption) error {
-	return MapScan(r, dest)
+	return MapScan(r, dest, option...)
 }
 
 // StructScan is like sql.Rows.Scan, but scans a single Row into a single Struct.
